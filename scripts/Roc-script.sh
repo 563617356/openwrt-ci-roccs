@@ -114,3 +114,24 @@ echo "baidu.com"  > package/luci-app-passwall/luci-app-passwall/root/usr/share/p
 
 ./scripts/feeds update -i -a
 ./scripts/feeds install -a
+
+# =================================================================
+# 終極修復：高通平台 WiFi 物理層未啟動 & 無線接口未橋接(DHCP不分配) 補丁
+# =================================================================
+
+# 1. 確保無線配置生成腳本預設直接啟用 WiFi，並將網絡劃分給局域網 lan
+if [ -f "package/kernel/mac80211/files/lib/wifi/mac80211.sh" ]; then
+    # 強制將預設禁用 disabled=1 改為 0 (開啟無線)
+    sed -i 's/disabled=1/disabled=0/g' package/kernel/mac80211/files/lib/wifi/mac80211.sh
+    # 高通平台核心修正：預設網絡接口由 wan 強制改為橋接到 lan，DHCP 廣播流量才能互通
+    sed -i "s/network='wan'/network='lan'/g" package/kernel/mac80211/files/lib/wifi/mac80211.sh
+fi
+
+# 2. 移除 LAN 口 DHCP 禁分配標誌，開啟權威廣播模式防止無線請求被過濾
+if [ -f "package/base-files/files/etc/config/dhcp" ]; then
+    # 安全移除任何可能阻斷局域網分配的 ignore 禁用項
+    sed -i '/option ignore/d' package/base-files/files/etc/config/dhcp
+    # 啟用本地權威 DHCP，強制回應所有本地無線及有線的 IP 分配請求
+    sed -i "s/option authoritative '0'/option authoritative '1'/g" package/base-files/files/etc/config/dhcp
+fi
+# =================================================================
