@@ -116,22 +116,37 @@ echo "baidu.com"  > package/luci-app-passwall/luci-app-passwall/root/usr/share/p
 ./scripts/feeds install -a
 
 # =================================================================
-# 終極修復：高通平台 WiFi 物理層未啟動 & 無線接口未橋接(DHCP不分配) 補丁
+# 高通NSS平台 WiFi+DHCP 修復補丁 (uci-defaults方案)
+# 原理：在固件首次啟動時通過uci-defaults腳本配置WiFi橋接到lan，確保DHCP正常工作
+# 注意：laipeng668/immortalwrt為高通NSS深度定制，標準mac80211.sh路徑不存在
 # =================================================================
 
-# 1. 確保無線配置生成腳本預設直接啟用 WiFi，並將網絡劃分給局域網 lan
-if [ -f "package/kernel/mac80211/files/lib/wifi/mac80211.sh" ]; then
-    # 強制將預設禁用 disabled=1 改為 0 (開啟無線)
-    sed -i 's/disabled=1/disabled=0/g' package/kernel/mac80211/files/lib/wifi/mac80211.sh
-    # 高通平台核心修正：預設網絡接口由 wan 強制改為橋接到 lan，DHCP 廣播流量才能互通
-    sed -i "s/network='wan'/network='lan'/g" package/kernel/mac80211/files/lib/wifi/mac80211.sh
-fi
+mkdir -p files/etc/uci-defaults
+cat > files/etc/uci-defaults/99-nss-wifi-fix << 'UCIEOF'
+#!/bin/sh
+# NSS WiFi Fix: 確保WiFi橋接到lan、DHCP正常分配IP
+# 解決ath11k NSS offload環境下無線客戶端無法獲取IP的問題
 
-# 2. 移除 LAN 口 DHCP 禁分配標誌，開啟權威廣播模式防止無線請求被過濾
-if [ -f "package/base-files/files/etc/config/dhcp" ]; then
-    # 安全移除任何可能阻斷局域網分配的 ignore 禁用項
-    sed -i '/option ignore/d' package/base-files/files/etc/config/dhcp
-    # 啟用本地權威 DHCP，強制回應所有本地無線及有線的 IP 分配請求
-    sed -i "s/option authoritative '0'/option authoritative '1'/g" package/base-files/files/etc/config/dhcp
-fi
+# 1. 啟用所有無線radio（預設可能disabled）
+for radio in $(uci -q show wireless | grep "=wifi-device" | cut -d'=' -f1); do
+    uci -q set ${radio}.disabled='0'
+done
+
+# 2. 將所有WiFi接口網絡強制橋接到lan（默認可能是wan，導致DHCP流量不通）
+for iface in $(uci -q show wireless | grep "=wifi-iface" | cut -d'=' -f1); do
+    uci -q set ${iface}.network='lan'
+done
+
+# 3. DHCP: 確保lan口可分配IP，開啟權威模式
+uci -q del dhcp.lan.ignore 2>/dev/null
+uci -q set dhcp.lan.ignore='0'
+uci -q set dhcp.lan.authoritative='1'
+
+# 4. 提交配置（將在系統首次啟動時自動生效）
+uci commit wireless
+uci commit dhcp
+
+exit 0
+UCIEOF
+chmod +x files/etc/uci-defaults/99-nss-wifi-fix
 # =================================================================
