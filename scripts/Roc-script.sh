@@ -95,6 +95,8 @@ git clone --depth=1 https://github.com/destan19/OpenAppFilter.git package/OpenAp
 git clone --depth=1 https://github.com/laipeng668/luci-app-gecoosac package/luci-app-gecoosac
 git clone --depth=1 https://github.com/NONGFAH/luci-app-athena-led package/luci-app-athena-led
 chmod +x package/luci-app-athena-led/root/etc/init.d/athena_led package/luci-app-athena-led/root/usr/sbin/athena-led
+# 高级设置(Advanced Settings) + 文件管理器 —— 来自 kenzok8/openwrt-packages
+git_sparse_clone master https://github.com/kenzok8/openwrt-packages luci-app-advanced
 
 ### PassWall & OpenClash ###
 
