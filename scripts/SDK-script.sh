@@ -873,6 +873,12 @@ extract_sdk "$RESOLVED_SDK_URL"
 
 log "Update SDK feeds"
 cd "$SDK_ROOT"
+# 优化 feed 源：移除编译不需要的 telephony/video feed（部分包 Makefile 在 SDK 下不兼容，
+# 会导致 feeds install -a 失败），并将 git.openwrt.org 替换为 GitHub 镜像避免 504 网关超时
+if [ -f feeds.conf.default ]; then
+  sed -i '/telephony/d; /video/d' feeds.conf.default
+  sed -i 's#git\.openwrt\.org/openwrt/#github.com/openwrt/#g; s#git\.openwrt\.org/feed/#github.com/openwrt/#g; s#git\.openwrt\.org/project/#github.com/openwrt/#g' feeds.conf.default
+fi
 ./scripts/feeds update -a
 
 log "Load custom packages"
