@@ -116,27 +116,34 @@ echo "baidu.com"  > package/luci-app-passwall/luci-app-passwall/root/usr/share/p
 
 ./scripts/feeds update -i -a
 ./scripts/feeds install -a
-
 # =================================================================
-# 高通NSS平台 WiFi+DHCP 修復補丁 (uci-defaults方案)
-# 原理：在固件首次啟動時通過uci-defaults腳本配置WiFi橋接到lan，確保DHCP正常工作
-# 注意：laipeng668/immortalwrt為高通NSS深度定制，標準mac80211.sh路徑不存在
+# 高通NSS平台 WiFi+DHCP 修復補丁 & 預設密碼設置 (uci-defaults方案)
+# 原理：在固件首次啟動時配置WiFi橋接、啟用無線、並強制加上預設加密與密碼
 # =================================================================
 
 mkdir -p files/etc/uci-defaults
 cat > files/etc/uci-defaults/99-nss-wifi-fix << 'UCIEOF'
 #!/bin/sh
-# NSS WiFi Fix: 確保WiFi橋接到lan、DHCP正常分配IP
-# 解決ath11k NSS offload環境下無線客戶端無法獲取IP的問題
+# NSS WiFi Fix & Default Password Config
 
 # 1. 啟用所有無線radio（預設可能disabled）
 for radio in $(uci -q show wireless | grep "=wifi-device" | cut -d'=' -f1); do
     uci -q set ${radio}.disabled='0'
 done
 
-# 2. 將所有WiFi接口網絡強制橋接到lan（默認可能是wan，導致DHCP流量不通）
+# 2. 遍歷配置所有無線接口
 for iface in $(uci -q show wireless | grep "=wifi-iface" | cut -d'=' -f1); do
+    # 將所有WiFi接口網絡強制橋接到lan，解決DHCP不通問題
     uci -q set ${iface}.network='lan'
+    
+    # 設置無線安全加密方式（推薦 WPA2-PSK 兼容性最好，高通卡也可改 sae-mixed）
+    uci -q set ${iface}.encryption='WPA2-PSK'
+    
+    # 設置預設 Wi-Fi 密碼（在此修改你想要的密碼，最少8位）
+    uci -q set ${iface}.key='12345678'
+    
+    # 可選：自定義預設 SSID 名稱（如果不改，會使用系統自帶的 OpenWrt/ImmortalWrt）
+    # uci -q set ${iface}.ssid='OWRT'
 done
 
 # 3. DHCP: 確保lan口可分配IP，開啟權威模式
@@ -152,3 +159,4 @@ exit 0
 UCIEOF
 chmod +x files/etc/uci-defaults/99-nss-wifi-fix
 # =================================================================
+
