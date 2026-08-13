@@ -144,7 +144,7 @@ for iface in $(uci -q show wireless | grep "=wifi-iface" | cut -d'=' -f1); do
     uci -q set ${iface}.key='12345678'
     
     # 可選：自定義預設 SSID 名稱（取消下一行注釋可生效）
-    uci -q set ${iface}.ssid='OWRT'
+    uci -q set ${iface}.ssid='JDCwifi_5280'
 done
 
 # 3. DHCP: 確保lan口可分配IP，開啟權威模式
