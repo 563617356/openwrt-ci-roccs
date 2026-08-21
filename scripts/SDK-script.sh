@@ -7,6 +7,8 @@ GECOOSAC_REPO="${GECOOSAC_REPO:-https://github.com/laipeng668/luci-app-gecoosac}
 AURORA_REPO="${AURORA_REPO:-https://github.com/eamonxg/luci-theme-aurora}"
 AURORA_CONFIG_REPO="${AURORA_CONFIG_REPO:-https://github.com/eamonxg/luci-app-aurora-config}"
 OPENLIST2_REPO="${OPENLIST2_REPO:-https://github.com/laipeng668/luci-app-openlist2}"
+DJONEHUB_REPO="${DJONEHUB_REPO:-https://github.com/563617356/luci-app-djonehub}"
+VOHIVE_REPO="${VOHIVE_REPO:-https://github.com/563617356/luci-app-vohive}"
 OPENWRT_TARGET="${OPENWRT_TARGET:-x86}"
 OPENWRT_SUBTARGET="${OPENWRT_SUBTARGET:-64}"
 OPENWRT_TARGET_PROFILE="${OPENWRT_TARGET_PROFILE:-}"
@@ -47,7 +49,7 @@ normalize_package_selection() {
     "" | all | "全部")
       printf 'all\n'
       ;;
-    frp | nginx | luci-app-aria2 | luci-app-frpc | luci-app-frps | luci-app-gecoosac | luci-app-openlist2 | luci-theme-aurora)
+    frp | nginx | luci-app-aria2 | luci-app-frpc | luci-app-frps | luci-app-gecoosac | luci-app-openlist2 | luci-app-djonehub | luci-app-vohive | luci-theme-aurora)
       printf '%s\n' "$selection"
       ;;
     aria2 | ariang)
@@ -75,7 +77,7 @@ normalize_package_selection() {
       printf 'luci-app-openlist2\n'
       ;;
     *)
-      die "Unsupported PACKAGE_SELECTION: ${1:-} (supported: all, nginx, luci-app-aria2, luci-app-frpc, luci-app-frps, luci-app-gecoosac, luci-app-openlist2, luci-theme-aurora; legacy aliases: aria2, ariang, frp, gecoosac, openlist2)"
+      die "Unsupported PACKAGE_SELECTION: ${1:-} (supported: all, nginx, luci-app-aria2, luci-app-frpc, luci-app-frps, luci-app-gecoosac, luci-app-openlist2, luci-app-djonehub, luci-app-vohive, luci-theme-aurora; legacy aliases: aria2, ariang, frp, gecoosac, openlist2)"
       ;;
   esac
 }
@@ -338,6 +340,29 @@ load_custom_packages() {
   git_clone_package_repo "$OPENLIST2_REPO" "$SDK_ROOT/package/openlist2" \
     openlist2/Makefile \
     luci-app-openlist2/Makefile
+  # DJOneHub / VoHive（563617356 自有仓库，单独编译用）
+  git_sparse_clone main "$DJONEHUB_REPO" package djonehub-core luci-app-djonehub
+  git_sparse_clone main "$VOHIVE_REPO" package vohive-core luci-app-vohive
+}
+
+select_arch_specific_core_variants() {
+  # djonehub-core / vohive-core 各提供 arm64/amd64/armv7 三个预编译变体（互相 CONFLICTS）。
+  # 仅启用当前目标架构对应的变体，避免把其它架构的预编译二进制打包进当前架构的产物。
+  local arm64_var="CONFIG_PACKAGE_djonehub-core-arm64"
+  local amd64_var="CONFIG_PACKAGE_djonehub-core-amd64"
+  local vh_arm64_var="CONFIG_PACKAGE_vohive-core-arm64"
+  local vh_amd64_var="CONFIG_PACKAGE_vohive-core-amd64"
+  local enable_amd64="n"
+
+  [ "$OPENWRT_TARGET" = "x86" ] && enable_amd64="y"
+
+  if [ "$enable_amd64" = "y" ]; then
+    sed -i "s/^# ${arm64_var} is not set/${arm64_var}=n/; s/^${arm64_var}=y/${arm64_var}=n/" "$SDK_ROOT/.config"
+    sed -i "s/^# ${vh_arm64_var} is not set/${vh_arm64_var}=n/; s/^${vh_arm64_var}=y/${vh_arm64_var}=n/" "$SDK_ROOT/.config"
+  else
+    sed -i "s/^# ${amd64_var} is not set/${amd64_var}=n/; s/^${amd64_var}=y/${amd64_var}=n/" "$SDK_ROOT/.config"
+    sed -i "s/^# ${vh_amd64_var} is not set/${vh_amd64_var}=n/; s/^${vh_amd64_var}=y/${vh_amd64_var}=n/" "$SDK_ROOT/.config"
+  fi
 }
 
 prune_luci_translations() {
@@ -520,6 +545,30 @@ generate_artifact_filters() {
     fi
   fi
 
+  if selection_in luci-app-djonehub && {
+    config_package_enabled djonehub-core-arm64 ||
+      config_package_enabled djonehub-core-amd64 ||
+      config_package_enabled luci-app-djonehub
+  }; then
+    add_artifact_package djonehub-core
+  fi
+
+  if selection_in luci-app-djonehub && config_package_enabled luci-app-djonehub; then
+    add_artifact_package luci-app-djonehub
+  fi
+
+  if selection_in luci-app-vohive && {
+    config_package_enabled vohive-core-arm64 ||
+      config_package_enabled vohive-core-amd64 ||
+      config_package_enabled luci-app-vohive
+  }; then
+    add_artifact_package vohive-core
+  fi
+
+  if selection_in luci-app-vohive && config_package_enabled luci-app-vohive; then
+    add_artifact_package luci-app-vohive
+  fi
+
   [ "${#ARTIFACT_PACKAGE_NAMES[@]}" -gt 0 ] || die "No package artifact filters were generated for PACKAGE_SELECTION=$PACKAGE_SELECTION"
 }
 
@@ -603,6 +652,18 @@ artifact_package_group() {
     package_file_matches_name "$package_file_name" nginx-full ||
     package_file_matches_name "$package_file_name" nginx-ssl; then
     printf 'nginx\n'
+    return 0
+  fi
+
+  if package_file_matches_name "$package_file_name" djonehub-core ||
+    package_file_matches_name "$package_file_name" luci-app-djonehub; then
+    printf 'luci-app-djonehub\n'
+    return 0
+  fi
+
+  if package_file_matches_name "$package_file_name" vohive-core ||
+    package_file_matches_name "$package_file_name" luci-app-vohive; then
+    printf 'luci-app-vohive\n'
     return 0
   fi
 
@@ -768,6 +829,30 @@ generate_compile_targets() {
     config_package_enabled luci-app-aurora-config && add_compile_target package/luci-app-aurora-config/compile
   fi
 
+  if selection_in luci-app-djonehub && {
+    config_package_enabled djonehub-core-arm64 ||
+      config_package_enabled djonehub-core-amd64 ||
+      config_package_enabled luci-app-djonehub
+  }; then
+    add_compile_target package/djonehub-core/compile
+  fi
+
+  if selection_in luci-app-djonehub && config_package_enabled luci-app-djonehub; then
+    add_compile_target package/luci-app-djonehub/compile
+  fi
+
+  if selection_in luci-app-vohive && {
+    config_package_enabled vohive-core-arm64 ||
+      config_package_enabled vohive-core-amd64 ||
+      config_package_enabled luci-app-vohive
+  }; then
+    add_compile_target package/vohive-core/compile
+  fi
+
+  if selection_in luci-app-vohive && config_package_enabled luci-app-vohive; then
+    add_compile_target package/luci-app-vohive/compile
+  fi
+
   [ "${#COMPILE_TARGETS[@]}" -gt 0 ] || die "No matching package compile targets were enabled by $PACKAGE_CONFIG_FILES for PACKAGE_SELECTION=$PACKAGE_SELECTION"
 }
 
@@ -895,6 +980,7 @@ prune_luci_translations
 log "Load package config"
 load_config_files
 make defconfig
+select_arch_specific_core_variants
 generate_compile_targets
 generate_artifact_filters
 
