@@ -1,0 +1,31 @@
+name: JDCloud-VIKING-ImmortalWrt
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  # schedule:
+  #   - cron: "0 18 * * *"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  Build:
+    uses: ./.github/workflows/Build-OpenWrt.yml
+    permissions:
+      contents: write
+      actions: write
+    with:
+      repo_url: https://github.com/VIKINGYFY/immortalwrt.git
+      repo_branch: owrt
+      config_file: configs/JDCloud.config
+      firmware_tag: JDCloud-VIKING
+      kernel_file: kernel-6.18
+      artifact_prefix: Arthur.Athena
+      manifest_file: immortalwrt-qualcommax-ipq60xx.manifest
+      delete_old_workflows: true
+      release_summary: >-
+        基于 VIKINGYFY/immortalwrt 的 owrt 分支（内核 6.18）构建的 JDCloud 亚瑟(RE-SS-01)/雅典娜(RE-CS-02) 满血NSS固件。
+        说明：官方/ImmortalWrt 的 openwrt-24.10 源码并不包含 JDCloud IPQ60xx 设备，故本工作流改用 VIKINGYFY 的 owrt 分支（6.18 内核 NSS 构建）作为可产出 JDCloud IPQ60xx 固件的稳定源。
+        在 ImmortalWrt 基础上添加了 cpufreq、ddns、upnp、wol、samba4、vlmcsd、aria2、autoreboot、uhttpd、frps、frpc、diskman、hd-idle、acme、openlist2、wireguard、watchcat、3cat、passwall、gecoosac 等软件包及若干工具，详见 JDCloud.config 与 General.config。
