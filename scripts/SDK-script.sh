@@ -521,15 +521,16 @@ disable_unavailable_core_variants() {
 }
 
 set_config_symbol() {
-  # 幂等地把 .config 里的某个符号设成 n：删掉已有写法再补一行 VAR=n。
+  # 幂等地把 .config 里的某个符号设成指定值（默认 n）：删掉已有写法再补一行 VAR=<value>。
   # 比 sed 就地替换更可靠——符号原本不在 .config 里时 sed 是无操作，
   # 而 defconfig 之后 make 会重新解析并把它恢复成 y。
   local var="$1"
   local config_file="$2"
+  local value="${3:-n}"
 
   [ -f "$config_file" ] || die "Config file not found: $config_file"
   sed -i "/^${var}=/d; /^# ${var} is not set$/d" "$config_file"
-  printf '%s=n\n' "$var" >> "$config_file"
+  printf '%s=%s\n' "$var" "$value" >> "$config_file"
 }
 
 select_arch_specific_core_variants() {
@@ -540,20 +541,26 @@ select_arch_specific_core_variants() {
   # 展开成 "depends on m || (PACKAGE_x != y)"，从而构成 kconfig 循环依赖
   # （日志里的 "recursive dependency detected"）。循环里的符号无法在 defconfig 之后
   # 再改值——下一次 make 会重新跑 defconfig 并把它改回来。因此本函数必须在
-  # make defconfig **之前** 调用，让 kconfig 从一开始就用 arm64=n / amd64=n 求解。
-  local enable_amd64="n"
+  # make defconfig **之前** 调用，让 kconfig 从一开始就用目标值求解。
+  #
+  # 不能只关掉"另一个"架构：循环依赖会让没在 .config 里出现的变体（如 armv7）
+  # 被 kconfig 按默认值启用，所以必须把三个变体的值全部显式写死。
+  local keep_arch="arm64"
+  local arch
 
-  [ "$OPENWRT_TARGET" = "x86" ] && enable_amd64="y"
+  [ "$OPENWRT_TARGET" = "x86" ] && keep_arch="amd64"
 
-  if [ "$enable_amd64" = "y" ]; then
-    set_config_symbol "CONFIG_PACKAGE_djonehub-core-arm64" "$SDK_ROOT/.config"
-    set_config_symbol "CONFIG_PACKAGE_vohive-core-arm64" "$SDK_ROOT/.config"
-  else
-    set_config_symbol "CONFIG_PACKAGE_djonehub-core-amd64" "$SDK_ROOT/.config"
-    set_config_symbol "CONFIG_PACKAGE_vohive-core-amd64" "$SDK_ROOT/.config"
-  fi
+  for arch in $CORE_VARIANT_ARCHS; do
+    if [ "$arch" = "$keep_arch" ]; then
+      set_config_symbol "CONFIG_PACKAGE_djonehub-core-${arch}" "$SDK_ROOT/.config" y
+      set_config_symbol "CONFIG_PACKAGE_vohive-core-${arch}" "$SDK_ROOT/.config" y
+    else
+      set_config_symbol "CONFIG_PACKAGE_djonehub-core-${arch}" "$SDK_ROOT/.config" n
+      set_config_symbol "CONFIG_PACKAGE_vohive-core-${arch}" "$SDK_ROOT/.config" n
+    fi
+  done
 
-  log "Core variant selection: OPENWRT_TARGET=$OPENWRT_TARGET enable_amd64=$enable_amd64"
+  log "Core variant selection: OPENWRT_TARGET=$OPENWRT_TARGET keep=${keep_arch}"
 }
 
 prune_luci_translations() {
