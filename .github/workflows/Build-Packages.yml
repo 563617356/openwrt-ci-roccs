@@ -39,6 +39,16 @@ on:
           - luci-app-djonehub
           - luci-app-vohive
           - luci-theme-aurora
+      djonehub_core_version:
+        description: 可选：djonehub-core 预编译二进制版本（对应 563617356/djonehub-release 的 tag）。
+        required: false
+        default: 'v1.5.2'
+        type: string
+      vohive_core_version:
+        description: 可选：vohive-core 预编译二进制版本（对应 iniwex5/vohive-release 的 tag，缺失时自动回退 Latest）。
+        required: false
+        default: 'v9.9.9'
+        type: string
   workflow_call:
     inputs:
       sdk_version:
@@ -52,6 +62,14 @@ on:
       package:
         required: false
         default: ALL
+        type: string
+      djonehub_core_version:
+        required: false
+        default: 'v1.5.2'
+        type: string
+      vohive_core_version:
+        required: false
+        default: 'v9.9.9'
         type: string
 
 permissions:
@@ -217,6 +235,8 @@ jobs:
         PACKAGE_SELECTED_ARCH: ${{ inputs.arch }}
         PACKAGE_SELECTION: ${{ inputs.package }}
         OPENWRT_SDK_VERSION: ${{ matrix.sdk_version }}
+        DJONEHUB_CORE_VERSION: ${{ inputs.djonehub_core_version }}
+        VOHIVE_CORE_VERSION: ${{ inputs.vohive_core_version }}
       run: |
         chmod +x scripts/SDK-script.sh
         scripts/SDK-script.sh
