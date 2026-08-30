@@ -19,6 +19,8 @@ DJONEHUB_CORE_VERSION="${DJONEHUB_CORE_VERSION:-v1.5.2}"
 # 上游 release.yml 用的也是 v9.9.9，取其为准，并保留"缺资源回退 Latest"的逻辑。
 VOHIVE_CORE_VERSION="${VOHIVE_CORE_VERSION:-v9.9.9}"
 CORE_VARIANT_ARCHS="${CORE_VARIANT_ARCHS:-arm64 amd64 armv7}"
+# feed 分支回退表，格式 "<原分支>=<备选分支>"，空格分隔。
+FEED_BRANCH_FALLBACKS="${FEED_BRANCH_FALLBACKS:-frp-binary-toml=frp-binary frp-toml=frp}"
 OPENWRT_TARGET="${OPENWRT_TARGET:-x86}"
 OPENWRT_SUBTARGET="${OPENWRT_SUBTARGET:-64}"
 OPENWRT_TARGET_PROFILE="${OPENWRT_TARGET_PROFILE:-}"
@@ -260,12 +262,43 @@ extract_sdk() {
   esac
 }
 
+resolve_feed_branch() {
+  # 上游 feed 仓库会重命名分支（frp-binary-toml -> frp-binary、frp-toml -> frp），
+  # 一旦改名整条 CI 就会在 clone 阶段直接挂掉。这里按 FEED_BRANCH_FALLBACKS
+  # 做一次"原分支不存在就用备选分支"的兜底。
+  local repourl="$1"
+  local branch="$2"
+  local pair
+  local fallback=""
+
+  for pair in $FEED_BRANCH_FALLBACKS; do
+    if [ "${pair%%=*}" = "$branch" ]; then
+      fallback="${pair#*=}"
+      break
+    fi
+  done
+
+  [ -n "$fallback" ] || {
+    printf '%s\n' "$branch"
+    return 0
+  }
+
+  if git ls-remote --heads --exit-code "$repourl" "$branch" >/dev/null 2>&1; then
+    printf '%s\n' "$branch"
+    return 0
+  fi
+
+  log "Feed branch $branch not found in $repourl, falling back to $fallback"
+  printf '%s\n' "$fallback"
+}
+
 git_sparse_clone() {
-  local branch="$1"
+  local branch
   local repourl="$2"
   local target_root="$3"
   local repodir
   local sparse_path
+  branch="$(resolve_feed_branch "$repourl" "$1")"
   shift 3
 
   repodir="$SPARSE_ROOT/$(basename "${repourl%.git}")-${branch//\//-}"
