@@ -769,12 +769,23 @@ artifact_package_allowed() {
 package_file_matches_name() {
   local package_file_name="$1"
   local package_name="$2"
+  local arch
 
   case "$package_file_name" in
     "${package_name}_"* | "${package_name}-"[0-9]* | "${package_name}-git"* | "${package_name}-v"[0-9]*)
       return 0
       ;;
   esac
+
+  # 核心变体包名带架构后缀（djonehub-core-arm64_1.5.2-r1_all.ipk），
+  # 用基础名 djonehub-core 匹配不上，需要额外按 "<包名>-<架构>" 再试一次。
+  for arch in $CORE_VARIANT_ARCHS; do
+    case "$package_file_name" in
+      "${package_name}-${arch}_"* | "${package_name}-${arch}-"[0-9]*)
+        return 0
+        ;;
+    esac
+  done
 
   return 1
 }
