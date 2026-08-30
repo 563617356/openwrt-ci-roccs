@@ -9,6 +9,16 @@ AURORA_CONFIG_REPO="${AURORA_CONFIG_REPO:-https://github.com/eamonxg/luci-app-au
 OPENLIST2_REPO="${OPENLIST2_REPO:-https://github.com/laipeng668/luci-app-openlist2}"
 DJONEHUB_REPO="${DJONEHUB_REPO:-https://github.com/563617356/luci-app-djonehub}"
 VOHIVE_REPO="${VOHIVE_REPO:-https://github.com/563617356/luci-app-vohive}"
+# djonehub-core / vohive-core 只打包预编译二进制，仓库里的 files/ 目录是空的（仅 .gitkeep），
+# 必须在编译前把对应架构的二进制下载进去，否则 install 阶段会报
+# "install: cannot stat './files/djonehub-arm64': No such file or directory"。
+DJONEHUB_RELEASE_REPO="${DJONEHUB_RELEASE_REPO:-https://github.com/563617356/djonehub-release}"
+VOHIVE_RELEASE_REPO="${VOHIVE_RELEASE_REPO:-https://github.com/iniwex5/vohive-release}"
+DJONEHUB_CORE_VERSION="${DJONEHUB_CORE_VERSION:-v1.5.2}"
+# vohive-core/Makefile 的默认值 v1.5.4 在 vohive-release 上没有对应资源，
+# 上游 release.yml 用的也是 v9.9.9，取其为准，并保留"缺资源回退 Latest"的逻辑。
+VOHIVE_CORE_VERSION="${VOHIVE_CORE_VERSION:-v9.9.9}"
+CORE_VARIANT_ARCHS="${CORE_VARIANT_ARCHS:-arm64 amd64 armv7}"
 OPENWRT_TARGET="${OPENWRT_TARGET:-x86}"
 OPENWRT_SUBTARGET="${OPENWRT_SUBTARGET:-64}"
 OPENWRT_TARGET_PROFILE="${OPENWRT_TARGET_PROFILE:-}"
@@ -31,6 +41,9 @@ WORKSPACE="${GITHUB_WORKSPACE:-$PWD}"
 COMPILE_TARGETS=()
 CONFIG_FILE_LIST=()
 ARTIFACT_PACKAGE_NAMES=()
+# 预编译核心二进制下载失败/校验不通过的包名，例如 vohive-core-arm64。
+# 这些变体会在 defconfig 之前被显式关掉，避免编译出坏包或直接构建失败。
+SKIPPED_CORE_PACKAGES=()
 
 log() {
   printf '\n==> %s\n' "$*" >&2
@@ -345,24 +358,169 @@ load_custom_packages() {
   git_sparse_clone main "$VOHIVE_REPO" package vohive-core luci-app-vohive
 }
 
+latest_github_release_tag() {
+  local api_url="$1"
+  local tag=""
+
+  tag="$(curl -fsSL --connect-timeout 20 --retry 3 "$api_url" |
+    python3 -c 'import sys,json;print(json.load(sys.stdin)["tag_name"])' 2>/dev/null)" || tag=""
+
+  [ -n "$tag" ] && printf '%s\n' "$tag"
+}
+
+is_elf_binary() {
+  # release 资源可能被上游替换成占位文本（出现过 12 字节的"江湖再见"），
+  # 这种文件 install 阶段不会报错，但打出来的包是坏的，所以必须校验 ELF 魔数。
+  local target="$1"
+  local magic
+
+  [ -s "$target" ] || return 1
+  magic="$(head -c 4 "$target" | od -An -tx1 | tr -d ' \n')"
+  [ "$magic" = "7f454c46" ]
+}
+
+fetch_core_binary() {
+  # $1=release 仓库 URL  $2=tag  $3=资源名前缀  $4=架构  $5=目标文件路径
+  # 成功返回 0；下载失败或产物不是 ELF 返回 1（调用方负责跳过对应变体）。
+  local release_repo="$1"
+  local version="$2"
+  local prefix="$3"
+  local arch="$4"
+  local target="$5"
+  local asset
+  local url
+  local api_url
+  local latest
+
+  asset="${prefix}_${version}_linux_${arch}"
+  url="${release_repo}/releases/download/${version}/${asset}"
+
+  if ! curl -fL --connect-timeout 20 --retry 3 "$url" -o "$target"; then
+    rm -f "$target"
+    return 1
+  fi
+
+  # 指定 tag 的下载到了但不是合法 ELF（缺资源 / 被占位文件替换）时，
+  # 回退到仓库 Latest，避免单个历史 tag 的问题让整个构建失败。
+  if ! is_elf_binary "$target"; then
+    api_url="https://api.github.com/repos/${release_repo#https://github.com/}/releases/latest"
+    latest="$(latest_github_release_tag "$api_url")"
+
+    if [ -n "$latest" ] && [ "$latest" != "$version" ]; then
+      log "Core asset $asset is not a valid binary, fall back to latest release $latest"
+      version="$latest"
+      asset="${prefix}_${version}_linux_${arch}"
+      url="${release_repo}/releases/download/${version}/${asset}"
+
+      if ! curl -fL --connect-timeout 20 --retry 3 "$url" -o "$target"; then
+        rm -f "$target"
+        return 1
+      fi
+    fi
+  fi
+
+  if ! is_elf_binary "$target"; then
+    log "Core asset $asset is not a valid ELF binary, skipping ${prefix}-core-${arch}"
+    rm -f "$target"
+    return 1
+  fi
+
+  chmod 0755 "$target"
+  log "Fetched ${asset} ($(wc -c <"$target" | tr -d ' ') bytes) -> $(basename "$target")"
+}
+
+fetch_prebuilt_core_binaries() {
+  # djonehub-core / vohive-core 只做二进制打包，仓库里的 files/ 只有 .gitkeep，
+  # 必须由 CI 在编译前把对应架构的预编译二进制拉进 files/。
+  local arch
+  local files_dir
+
+  if selection_in luci-app-djonehub; then
+    files_dir="$SDK_ROOT/package/djonehub-core/files"
+    mkdir -p "$files_dir"
+    for arch in $CORE_VARIANT_ARCHS; do
+      fetch_core_binary "$DJONEHUB_RELEASE_REPO" "$DJONEHUB_CORE_VERSION" \
+        djonehub "$arch" "$files_dir/djonehub-${arch}" ||
+        SKIPPED_CORE_PACKAGES+=("djonehub-core-${arch}")
+    done
+  fi
+
+  if selection_in luci-app-vohive; then
+    files_dir="$SDK_ROOT/package/vohive-core/files"
+    mkdir -p "$files_dir"
+    for arch in $CORE_VARIANT_ARCHS; do
+      fetch_core_binary "$VOHIVE_RELEASE_REPO" "$VOHIVE_CORE_VERSION" \
+        vohive "$arch" "$files_dir/vohive-${arch}" ||
+        SKIPPED_CORE_PACKAGES+=("vohive-core-${arch}")
+    done
+  fi
+
+  if [ "${#SKIPPED_CORE_PACKAGES[@]}" -gt 0 ]; then
+    log "Unavailable core variants: ${SKIPPED_CORE_PACKAGES[*]}"
+  fi
+}
+
+core_variant_available() {
+  # 判断 <prefix>-core 是否至少有一个"二进制可用且已在 .config 里启用"的变体。
+  local prefix="$1"
+  local arch
+  local skipped
+
+  for arch in $CORE_VARIANT_ARCHS; do
+    for skipped in ${SKIPPED_CORE_PACKAGES[@]+"${SKIPPED_CORE_PACKAGES[@]}"}; do
+      [ "$skipped" != "${prefix}-core-${arch}" ] || continue 2
+    done
+    config_package_enabled "${prefix}-core-${arch}" && return 0
+  done
+
+  return 1
+}
+
+disable_unavailable_core_variants() {
+  # 预编译二进制下载失败/校验不通过的变体，必须在 defconfig 之前显式关掉，
+  # 否则 install 阶段会因 files/ 里没有对应二进制而失败。
+  local package_name
+
+  for package_name in ${SKIPPED_CORE_PACKAGES[@]+"${SKIPPED_CORE_PACKAGES[@]}"}; do
+    set_config_symbol "CONFIG_PACKAGE_${package_name}" "$SDK_ROOT/.config"
+    log "Disabled unavailable core variant: $package_name"
+  done
+}
+
+set_config_symbol() {
+  # 幂等地把 .config 里的某个符号设成 n：删掉已有写法再补一行 VAR=n。
+  # 比 sed 就地替换更可靠——符号原本不在 .config 里时 sed 是无操作，
+  # 而 defconfig 之后 make 会重新解析并把它恢复成 y。
+  local var="$1"
+  local config_file="$2"
+
+  [ -f "$config_file" ] || die "Config file not found: $config_file"
+  sed -i "/^${var}=/d; /^# ${var} is not set$/d" "$config_file"
+  printf '%s=n\n' "$var" >> "$config_file"
+}
+
 select_arch_specific_core_variants() {
   # djonehub-core / vohive-core 各提供 arm64/amd64/armv7 三个预编译变体（互相 CONFLICTS）。
   # 仅启用当前目标架构对应的变体，避免把其它架构的预编译二进制打包进当前架构的产物。
-  local arm64_var="CONFIG_PACKAGE_djonehub-core-arm64"
-  local amd64_var="CONFIG_PACKAGE_djonehub-core-amd64"
-  local vh_arm64_var="CONFIG_PACKAGE_vohive-core-arm64"
-  local vh_amd64_var="CONFIG_PACKAGE_vohive-core-amd64"
+  #
+  # 注意事项：这三个变体互相 CONFLICTS，OpenWrt 的 package-metadata.pl 会把 CONFLICTS
+  # 展开成 "depends on m || (PACKAGE_x != y)"，从而构成 kconfig 循环依赖
+  # （日志里的 "recursive dependency detected"）。循环里的符号无法在 defconfig 之后
+  # 再改值——下一次 make 会重新跑 defconfig 并把它改回来。因此本函数必须在
+  # make defconfig **之前** 调用，让 kconfig 从一开始就用 arm64=n / amd64=n 求解。
   local enable_amd64="n"
 
   [ "$OPENWRT_TARGET" = "x86" ] && enable_amd64="y"
 
   if [ "$enable_amd64" = "y" ]; then
-    sed -i "s/^# ${arm64_var} is not set/${arm64_var}=n/; s/^${arm64_var}=y/${arm64_var}=n/" "$SDK_ROOT/.config"
-    sed -i "s/^# ${vh_arm64_var} is not set/${vh_arm64_var}=n/; s/^${vh_arm64_var}=y/${vh_arm64_var}=n/" "$SDK_ROOT/.config"
+    set_config_symbol "CONFIG_PACKAGE_djonehub-core-arm64" "$SDK_ROOT/.config"
+    set_config_symbol "CONFIG_PACKAGE_vohive-core-arm64" "$SDK_ROOT/.config"
   else
-    sed -i "s/^# ${amd64_var} is not set/${amd64_var}=n/; s/^${amd64_var}=y/${amd64_var}=n/" "$SDK_ROOT/.config"
-    sed -i "s/^# ${vh_amd64_var} is not set/${vh_amd64_var}=n/; s/^${vh_amd64_var}=y/${vh_amd64_var}=n/" "$SDK_ROOT/.config"
+    set_config_symbol "CONFIG_PACKAGE_djonehub-core-amd64" "$SDK_ROOT/.config"
+    set_config_symbol "CONFIG_PACKAGE_vohive-core-amd64" "$SDK_ROOT/.config"
   fi
+
+  log "Core variant selection: OPENWRT_TARGET=$OPENWRT_TARGET enable_amd64=$enable_amd64"
 }
 
 prune_luci_translations() {
@@ -545,11 +703,7 @@ generate_artifact_filters() {
     fi
   fi
 
-  if selection_in luci-app-djonehub && {
-    config_package_enabled djonehub-core-arm64 ||
-      config_package_enabled djonehub-core-amd64 ||
-      config_package_enabled luci-app-djonehub
-  }; then
+  if selection_in luci-app-djonehub && core_variant_available djonehub; then
     add_artifact_package djonehub-core
   fi
 
@@ -557,11 +711,7 @@ generate_artifact_filters() {
     add_artifact_package luci-app-djonehub
   fi
 
-  if selection_in luci-app-vohive && {
-    config_package_enabled vohive-core-arm64 ||
-      config_package_enabled vohive-core-amd64 ||
-      config_package_enabled luci-app-vohive
-  }; then
+  if selection_in luci-app-vohive && core_variant_available vohive; then
     add_artifact_package vohive-core
   fi
 
@@ -829,11 +979,7 @@ generate_compile_targets() {
     config_package_enabled luci-app-aurora-config && add_compile_target package/luci-app-aurora-config/compile
   fi
 
-  if selection_in luci-app-djonehub && {
-    config_package_enabled djonehub-core-arm64 ||
-      config_package_enabled djonehub-core-amd64 ||
-      config_package_enabled luci-app-djonehub
-  }; then
+  if selection_in luci-app-djonehub && core_variant_available djonehub; then
     add_compile_target package/djonehub-core/compile
   fi
 
@@ -841,11 +987,7 @@ generate_compile_targets() {
     add_compile_target package/luci-app-djonehub/compile
   fi
 
-  if selection_in luci-app-vohive && {
-    config_package_enabled vohive-core-arm64 ||
-      config_package_enabled vohive-core-amd64 ||
-      config_package_enabled luci-app-vohive
-  }; then
+  if selection_in luci-app-vohive && core_variant_available vohive; then
     add_compile_target package/vohive-core/compile
   fi
 
@@ -970,6 +1112,9 @@ log "Load custom packages"
 remove_builtin_packages
 load_custom_packages
 
+log "Fetch prebuilt core binaries"
+fetch_prebuilt_core_binaries
+
 log "Refresh SDK feed indexes"
 ./scripts/feeds update -i -a
 
@@ -979,8 +1124,11 @@ prune_luci_translations
 
 log "Load package config"
 load_config_files
-make defconfig
+# 必须在 defconfig 之前调用：变体间的 CONFLICTS 会构成 kconfig 循环依赖，
+# defconfig 之后再改 .config 会被下一次 make 自动跑的 defconfig 覆盖掉。
 select_arch_specific_core_variants
+disable_unavailable_core_variants
+make defconfig
 generate_compile_targets
 generate_artifact_filters
 
