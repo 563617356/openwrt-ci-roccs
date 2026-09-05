@@ -98,6 +98,10 @@ chmod +x package/luci-app-athena-led/root/etc/init.d/athena_led package/luci-app
 # 高级设置(Advanced Settings) + 文件管理器 —— 来自 kenzok8/openwrt-packages
 git_sparse_clone master https://github.com/kenzok8/openwrt-packages luci-app-advanced
 
+# DJOneHub & VOHive 前端（核心二进制在运行时从各 release 仓库拉取，避免编入错误版本）
+git_sparse_clone main https://github.com/563617356/luci-app-djonehub luci-app-djonehub
+git_sparse_clone main https://github.com/563617356/luci-app-vohive luci-app-vohive
+
 ### PassWall & OpenClash ###
 
 # 移除 OpenWrt Feeds 自带的核心库
