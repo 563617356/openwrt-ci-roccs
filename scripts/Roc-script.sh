@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # 修改默认IP & 固件名称 & 编译署名和时间
-sed -i 's/192.168.1.1/192.168.1.80/g' package/base-files/files/bin/config_generate
+sed -i 's/192.168.1.1/192.168.2.80/g' package/base-files/files/bin/config_generate
 sed -i "s/hostname='.*'/hostname='Roc'/g" package/base-files/files/bin/config_generate
 luci_system_js="feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js"
 firmware_version_anchor="_('Firmware Version'), (L.isObject(boardinfo.release) ? boardinfo.release.description + ' / ' : '') + (luciversion || ''),"
@@ -145,7 +145,7 @@ for iface in $(uci -q show wireless | grep "=wifi-iface" | cut -d'=' -f1); do
     uci -q set ${iface}.encryption='psk2'
     
     # 設置預設 Wi-Fi 密碼（最少8位）
-    uci -q set ${iface}.key='12345678'
+    uci -q set ${iface}.key='987654321'
     
     # 可選：自定義預設 SSID 名稱（取消下一行注釋可生效）
     uci -q set ${iface}.ssid='JDCwifi_5280'
