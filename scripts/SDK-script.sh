@@ -56,19 +56,21 @@ die() {
   exit 1
 }
 
-normalize_package_selection() {
+normalize_package_group() {
   local selection="${1:-all}"
 
-  selection="${selection,,}"
   case "$selection" in
     "" | all | "全部")
       printf 'all\n'
       ;;
-    frp | nginx | luci-app-aria2 | luci-app-frpc | luci-app-frps | luci-app-gecoosac | luci-app-openlist2 | luci-app-djonehub | luci-app-vohive | luci-theme-aurora)
+    aria2 | nginx | samba | luci-app-aria2 | luci-app-frpc | luci-app-frps | luci-app-gecoosac | luci-app-openlist2 | luci-app-djonehub | luci-app-vohive | luci-theme-aurora)
       printf '%s\n' "$selection"
       ;;
-    aria2 | ariang)
+    ariang)
       printf 'luci-app-aria2\n'
+      ;;
+    samba4 | luci-app-samba4)
+      printf 'samba\n'
       ;;
     frpc)
       printf 'luci-app-frpc\n'
@@ -85,15 +87,41 @@ normalize_package_selection() {
     gecoosac)
       printf 'luci-app-gecoosac\n'
       ;;
-    openlist | openlist2)
-      printf 'luci-app-openlist2\n'
-      ;;
-    luci-app-openlist)
+    openlist | openlist2 | luci-app-openlist)
       printf 'luci-app-openlist2\n'
       ;;
     *)
-      die "Unsupported PACKAGE_SELECTION: ${1:-} (supported: all, nginx, luci-app-aria2, luci-app-frpc, luci-app-frps, luci-app-gecoosac, luci-app-openlist2, luci-app-djonehub, luci-app-vohive, luci-theme-aurora; legacy aliases: aria2, ariang, frp, gecoosac, openlist2)"
+      die "Unsupported PACKAGE_SELECTION: ${1:-} (supported: all, aria2, nginx, samba, luci-app-aria2, luci-app-frpc, luci-app-frps, luci-app-gecoosac, luci-app-openlist2, luci-app-djonehub, luci-app-vohive, luci-theme-aurora; legacy aliases: ariang, samba4, frp, gecoosac, openlist2; 多个分组可用英文逗号分隔，例如 samba,aria2)"
       ;;
+  esac
+}
+
+normalize_package_selection() {
+  # 支持多选：PACKAGE_SELECTION 可以为 "samba,aria2" 或 "samba aria2"，
+  # 逐个归一化后去重合并成 "samba,aria2"。含 all 时整体退化为 all。
+  local selection="${1:-all}"
+  local normalized=""
+  local token
+  local -a tokens
+
+  selection="${selection,,}"
+  selection="${selection//,/ }"
+  selection="${selection//，/ }"
+  read -r -a tokens <<<"$selection"
+
+  [ "${#tokens[@]}" -gt 0 ] || tokens=(all)
+
+  for token in "${tokens[@]}"; do
+    token="$(normalize_package_group "$token")"
+    case ",$normalized," in
+      *",$token,"*) ;;
+      *) normalized="${normalized:+$normalized,}$token" ;;
+    esac
+  done
+
+  case ",$normalized," in
+    *,all,*) printf 'all\n' ;;
+    *) printf '%s\n' "$normalized" ;;
   esac
 }
 
@@ -140,7 +168,15 @@ selection_is_all() {
 }
 
 selection_is() {
-  [ "$PACKAGE_SELECTION" = "$1" ]
+  # PACKAGE_SELECTION 归一化后是逗号分隔的分组列表（单选也是列表），
+  # 这里按成员判断，避免多选时整串比较永远不相等。
+  case ",$PACKAGE_SELECTION," in
+    *",$1,"*)
+      return 0
+      ;;
+  esac
+
+  return 1
 }
 
 selection_in() {
@@ -563,6 +599,41 @@ select_arch_specific_core_variants() {
   log "Core variant selection: OPENWRT_TARGET=$OPENWRT_TARGET keep=${keep_arch}"
 }
 
+config_symbol_enabled() {
+  # $1=完整符号名（含 CONFIG_ 前缀），例如 CONFIG_ARIA2_OPENSSL
+  grep -Eq "^$1=(y|m)$" "$SDK_ROOT/.config"
+}
+
+enable_selected_package_configs() {
+  # 选中的分组必须在 .config 里真的被打开。
+  # 仓库里的 configs/*.config 是整机固件用的：samba4 这类包根本没出现（默认 n），
+  # aria2 还被显式写成 =n，若不在 defconfig 之前打开，defconfig 之后
+  # config_package_enabled 永远为假，generate_compile_targets 会因找不到目标直接 die。
+  # 这里把需要的符号追加到 .config 末尾（kconfig 中后出现的赋值优先），依赖由 defconfig 求解。
+  local config_file="$SDK_ROOT/.config"
+
+  if selection_in aria2; then
+    config_symbol_enabled "CONFIG_PACKAGE_aria2" ||
+      set_config_symbol "CONFIG_PACKAGE_aria2" "$config_file" y
+    # aria2 的 SSL 后端是 kconfig choice，三个都不设时默认落到 NOSSL，https 下载不可用。
+    config_symbol_enabled "CONFIG_ARIA2_OPENSSL" ||
+      set_config_symbol "CONFIG_ARIA2_OPENSSL" "$config_file" y
+  fi
+
+  if selection_in samba; then
+    config_symbol_enabled "CONFIG_PACKAGE_samba4-server" ||
+      set_config_symbol "CONFIG_PACKAGE_samba4-server" "$config_file" y
+    config_symbol_enabled "CONFIG_PACKAGE_samba4-utils" ||
+      set_config_symbol "CONFIG_PACKAGE_samba4-utils" "$config_file" y
+    if [ -d "$SDK_ROOT/package/feeds/luci/luci-app-samba4" ]; then
+      config_symbol_enabled "CONFIG_PACKAGE_luci-app-samba4" ||
+        set_config_symbol "CONFIG_PACKAGE_luci-app-samba4" "$config_file" y
+    else
+      log "luci-app-samba4 not found in luci feed, samba group builds CLI packages only"
+    fi
+  fi
+}
+
 prune_luci_translations() {
   local lang_dir
   local lang_name
@@ -674,6 +745,23 @@ generate_artifact_filters() {
 
   if selection_in luci-app-aria2 && config_package_enabled ariang; then
     add_artifact_package ariang
+  fi
+
+  # 单独编译 aria2 二进制包
+  if selection_in aria2 && config_package_enabled aria2; then
+    add_artifact_package aria2
+  fi
+
+  # samba4-libs 是依赖包，必须一起收集，否则单装 samba4-server 会缺库
+  if selection_in samba && config_package_enabled samba4-server; then
+    add_artifact_package samba4-libs
+    add_artifact_package samba4-server
+    add_artifact_package samba4-utils
+  fi
+
+  if selection_in samba && config_package_enabled luci-app-samba4; then
+    add_artifact_package luci-app-samba4
+    add_luci_i18n_packages samba4
   fi
 
   if selection_in luci-app-aria2 && config_package_enabled luci-app-aria2; then
@@ -799,6 +887,20 @@ package_file_matches_name() {
 
 artifact_package_group() {
   local package_file_name="$1"
+
+  # samba4 一个源码目录产出 samba4-libs/server/utils 等多个子包，统一归到 samba 分组
+  case "$package_file_name" in
+    samba4-* | luci-app-samba4* | luci-i18n-samba4*)
+      printf 'samba\n'
+      return 0
+      ;;
+  esac
+
+  # 单独编译 aria2（不带 LuCI）时归到独立 aria2 分组，不再并进 luci-app-aria2
+  if selection_is aria2 && package_file_matches_name "$package_file_name" aria2; then
+    printf 'aria2\n'
+    return 0
+  fi
 
   if package_file_matches_name "$package_file_name" aria2 ||
     package_file_matches_name "$package_file_name" ariang ||
@@ -968,6 +1070,21 @@ generate_compile_targets() {
       config_package_enabled ariang-nginx
   }; then
     add_compile_target package/feeds/packages/ariang/compile
+  fi
+
+  # 单独编译 aria2 二进制包（不带 ariang / luci-app-aria2）
+  if selection_in aria2 && config_package_enabled aria2; then
+    add_compile_target package/feeds/packages/aria2/compile
+  fi
+
+  # samba4 源码目录一次产出发 samba4-libs/server/client/admin/utils 多个子包
+  if selection_in samba && config_package_enabled samba4-server; then
+    add_compile_target package/feeds/packages/samba4/compile
+  fi
+
+  if selection_in samba && config_package_enabled luci-app-samba4 &&
+    [ -d "$SDK_ROOT/package/feeds/luci/luci-app-samba4" ]; then
+    add_compile_target package/feeds/luci/luci-app-samba4/compile
   fi
 
   if { selection_in frp && {
@@ -1179,6 +1296,7 @@ load_config_files
 # defconfig 之后再改 .config 会被下一次 make 自动跑的 defconfig 覆盖掉。
 select_arch_specific_core_variants
 disable_unavailable_core_variants
+enable_selected_package_configs
 make defconfig
 generate_compile_targets
 generate_artifact_filters
